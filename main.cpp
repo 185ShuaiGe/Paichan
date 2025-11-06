@@ -1,130 +1,109 @@
 #include <iostream>
 #include <vector>
-#include <string>
-#include <algorithm>
 #include <random>
-#include <fstream>    // 新增：用于文件流操作
-#include <filesystem> // 新增：用于创建目录
+#include <chrono>
+#include <algorithm>
+#include <map>
+#include <filesystem> // 用于创建目录
+#include <fstream>    // 用于文件流
 
-// 包含所有自定义模块
-#include "Constants.h"
 #include "DataStructures.h"
+#include "Constants.h"
 #include "FileUtils.h"
 #include "GeneticAlgorithm.h"
 
-// 定义在GeneticAlgorithm.h中声明的全局随机数生成器
-std::mt19937 rng(std::random_device{}());
+std::mt19937 rng(std::chrono::steady_clock::now().time_since_epoch().count());
 
 int main()
 {
-    // --- 准备输出目录 ---
-    const std::string output_dir = "results/";
+    // 确保输出目录存在
     try
     {
-        std::filesystem::create_directory(output_dir);
+        std::filesystem::create_directory(OUTPUT_DIR);
     }
     catch (const std::filesystem::filesystem_error &e)
     {
         std::cerr << "Error creating directory: " << e.what() << std::endl;
+        return 1;
     }
 
     // 1. 读取数据
-    auto bricks = read_brick_data("data_input_converted.csv");
+    std::vector<Brick> bricks = read_brick_data("bricks_data.csv");
     if (bricks.empty())
-    {
         return 1;
-    }
-    std::cout << "Read " << bricks.size() << " types of bricks." << std::endl;
+    size_t num_bricks = bricks.size();
 
-    // --- 准备迭代过程日志文件 ---
-    std::ofstream progress_log(output_dir + "progress_log.csv");
-    if (!progress_log.is_open())
+    // 2. 第一阶段
+    std::cout << "Phase 1: Pre-scheduling first " << PHASE1_DAYS << " days..." << std::endl;
+    Individual base_schedule(num_bricks);
+    std::vector<int> remaining_quantities(num_bricks);
+    for (size_t i = 0; i < num_bricks; ++i)
+        remaining_quantities[i] = bricks[i].quantity;
+    pre_schedule_phase1(base_schedule, bricks, remaining_quantities);
+
+    // 3. 准备第二阶段
+    std::map<int, int> phase2_demands;
+    for (size_t i = 0; i < num_bricks; ++i)
     {
-        std::cerr << "Error: Could not create progress_log.csv" << std::endl;
+        if (remaining_quantities[i] > 0)
+            phase2_demands[i] = remaining_quantities[i];
     }
-    else
-    {
-        // 写入CSV表头
-        progress_log << "Generation,BestFitness,ActualDays\n";
-    }
+    std::cout << "Phase 1 complete. " << phase2_demands.size() << " brick types have remaining demand for Phase 2." << std::endl;
 
-    // 2. 初始化种群
-    std::cout << "Initializing population..." << std::endl;
-    auto population = initialize_population(bricks);
+    // 4. 第二阶段：遗传算法
+    std::cout << "Phase 2: Running Genetic Algorithm..." << std::endl;
+    std::ofstream log_file(OUTPUT_DIR + "progress_log.csv");
+    log_file << "Generation,BestFitness,TotalDays\n";
 
-    Individual best_overall_solution = population[0];
-    calculate_fitness(best_overall_solution, bricks);
+    std::vector<Individual> population = initialize_population_phase2(bricks, phase2_demands, base_schedule);
 
-    // 3. 遗传算法主循环
     for (int gen = 0; gen < MAX_GENERATIONS; ++gen)
     {
-        for (auto &individual : population)
+        for (auto &ind : population)
         {
-            calculate_fitness(individual, bricks);
+            calculate_fitness_phase2(ind, bricks, phase2_demands);
         }
 
         std::sort(population.begin(), population.end(), [](const Individual &a, const Individual &b)
                   { return a.fitness < b.fitness; });
 
-        if (population[0].fitness < best_overall_solution.fitness)
-        {
-            best_overall_solution = population[0];
-        }
-
-        std::cout << "Generation " << gen << ": Best Fitness = " << best_overall_solution.fitness
-                  << " (Production Days: " << best_overall_solution.actual_days << ")" << std::endl;
-
-        // --- 将本代数据写入日志文件 ---
-        if (progress_log.is_open())
-        {
-            progress_log << gen << "," << best_overall_solution.fitness << "," << best_overall_solution.actual_days << "\n";
-        }
-
-        // 生成下一代种群
         std::vector<Individual> new_population;
-        new_population.push_back(best_overall_solution);
+        new_population.push_back(population[0]);
 
         while (new_population.size() < POPULATION_SIZE)
         {
             Individual parent1 = tournament_selection(population);
             Individual parent2 = tournament_selection(population);
-
             Individual offspring = parent1;
-            std::uniform_real_distribution<> cross_dist(0.0, 1.0);
-            if (cross_dist(rng) < CROSSOVER_RATE)
+            if ((double)rand() / RAND_MAX < CROSSOVER_RATE)
             {
-                offspring = crossover(parent1, parent2, bricks);
+                offspring = crossover_phase2(parent1, parent2, bricks);
             }
-
-            std::uniform_real_distribution<> mut_dist(0.0, 1.0);
-            if (mut_dist(rng) < MUTATION_RATE)
+            if ((double)rand() / RAND_MAX < MUTATION_RATE)
             {
-                mutate(offspring, bricks);
+                mutate_phase2(offspring, bricks, phase2_demands);
             }
             new_population.push_back(offspring);
         }
         population = new_population;
+
+        if ((gen + 1) % 100 == 0)
+        {
+            std::cout << "Generation " << gen + 1 << "/" << MAX_GENERATIONS << ", Best Fitness: " << population[0].fitness << ", Total Days: " << population[0].actual_days << std::endl;
+            log_file << gen + 1 << "," << population[0].fitness << "," << population[0].actual_days << "\n";
+        }
     }
+    log_file.close();
 
-    // 关闭日志文件
-    if (progress_log.is_open())
-    {
-        progress_log.close();
-    }
+    // 5. 最终结果
+    Individual best_solution = population[0];
+    calculate_fitness_phase2(best_solution, bricks, phase2_demands);
 
-    // 4. 输出最终结果
-    calculate_fitness(best_overall_solution, bricks);
-    std::cout << "\n--- Optimization Finished ---\n";
+    std::cout << "\nOptimization finished." << std::endl;
+    std::cout << "Best solution found with total duration: " << best_solution.actual_days << " working days." << std::endl;
 
-    int total_period_with_rest = std::ceil(static_cast<double>(best_overall_solution.actual_days) * 7.0 / 6.0);
-    std::cout << "  - Total Production Period (including rest days): " << total_period_with_rest << " days.\n";
-    std::cout << "  - Total Working Days: " << best_overall_solution.actual_days << " days.\n";
-    std::cout << "  - Final Fitness Score: " << best_overall_solution.fitness << "\n";
-
-    // 将最终计划写入results目录
-    write_schedule_to_csv(best_overall_solution, bricks, output_dir + "production_plan.csv");
-    std::cout << "Optimal production plan saved to " << output_dir << "production_plan.csv" << std::endl;
-    std::cout << "Optimization progress log saved to " << output_dir << "progress_log.csv" << std::endl;
+    write_schedule_to_csv(best_solution, bricks, "production_plan.csv");
+    std::cout << "Production plan and progress log saved to '" << OUTPUT_DIR << "' folder." << std::endl;
 
     return 0;
 }

@@ -1,24 +1,35 @@
-#pragma once
+#ifndef DATA_STRUCTURES_H
+#define DATA_STRUCTURES_H
 
 #include <vector>
 #include <string>
-
-// --- 数据结构 ---
+#include "Constants.h"
 
 struct Brick
 {
     int id;
     std::string type;
-    double total_count;
+    int quantity;
     double weight;
-    int priority; // 0 for ZD, 1 for ZB, 2 for ZF
+    int priority;
 };
 
-// 代表一个个体（一种排产方案）
 struct Individual
 {
-    // schedule[day][brick_id] = produced_amount
-    std::vector<std::vector<double>> schedule;
-    double fitness = -1.0;
-    int actual_days = 0; // 存储真实的、不含惩罚的天数
+    // 核心改动：schedule变为三维数组 [天][道次][砖型]
+    std::vector<std::vector<std::vector<int>>> schedule;
+    double fitness;
+    int actual_days;
+
+    Individual() : fitness(0.0), actual_days(0) {}
+
+    // 构造函数需要知道砖块总数以正确初始化
+    Individual(int num_bricks) : fitness(0.0), actual_days(0)
+    {
+        schedule.resize(MAX_DAYS,
+                        std::vector<std::vector<int>>(PASSES_PER_DAY,
+                                                      std::vector<int>(num_bricks, 0)));
+    }
 };
+
+#endif // DATA_STRUCTURES_H

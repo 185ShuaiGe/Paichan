@@ -1,15 +1,20 @@
-#pragma once
+#ifndef FILE_UTILS_H
+#define FILE_UTILS_H
 
 #include <iostream>
-#include <vector>
-#include <string>
 #include <fstream>
 #include <sstream>
-#include <cmath>
-#include "DataStructures.h" // 依赖于自定义的数据结构
+#include <vector>
+#include <string>
+#include <stdexcept>
+#include <iomanip>
+#include <ctime>
+#include <filesystem> // C++17 标准库，用于创建目录
 
-// --- 函数声明与实现 ---
+#include "DataStructures.h"
+#include "Constants.h"
 
+// read_brick_data 函数保持不变
 std::vector<Brick> read_brick_data(const std::string &filename)
 {
     std::vector<Brick> bricks;
@@ -19,108 +24,116 @@ std::vector<Brick> read_brick_data(const std::string &filename)
         std::cerr << "Error: Could not open file " << filename << std::endl;
         return bricks;
     }
-
     std::string line;
-    // Skip header
-    std::getline(file, line);
-
+    std::getline(file, line); // Skip header
     while (std::getline(file, line))
     {
         std::stringstream ss(line);
-        std::string item;
+        std::string cell;
         Brick b;
-
-        std::getline(ss, item, ',');
-        b.id = std::stoi(item);
-        std::getline(ss, item, ',');
-        b.type = item;
-        std::getline(ss, item, ',');
-        b.total_count = std::stod(item);
-        std::getline(ss, item, ',');
-        b.weight = std::stod(item);
-
-        if (b.type.rfind("ZD", 0) == 0)
-            b.priority = 0;
-        else if (b.type.rfind("ZB", 0) == 0)
-            b.priority = 1;
-        else
-            b.priority = 2;
-
-        bricks.push_back(b);
+        try
+        {
+            std::getline(ss, cell, ',');
+            b.id = std::stoi(cell);
+            std::getline(ss, b.type, ',');
+            std::getline(ss, cell, ',');
+            b.quantity = std::stoi(cell);
+            std::getline(ss, cell, ',');
+            b.weight = std::stod(cell);
+            std::getline(ss, cell, ',');
+            b.priority = std::stoi(cell);
+            bricks.push_back(b);
+        }
+        catch (const std::invalid_argument &e)
+        {
+            std::cerr << "Warning: Skipping invalid line in CSV: " << line << " (" << e.what() << ")" << std::endl;
+        }
     }
-    file.close();
     return bricks;
 }
 
-void write_schedule_to_csv(const Individual &individual, const std::vector<Brick> &bricks, const std::string &filename)
+// 重写CSV写入函数，正确处理周日并输出到指定文件夹
+void write_schedule_to_csv(const Individual &best_solution, const std::vector<Brick> &bricks, const std::string &filename)
 {
-    std::ofstream file(filename);
+    // 确保输出目录存在
+    std::filesystem::create_directory(OUTPUT_DIR);
+    std::ofstream file(OUTPUT_DIR + filename);
+
     if (!file.is_open())
     {
-        std::cerr << "Error: Could not create output file " << filename << std::endl;
+        std::cerr << "Error: Could not open file for writing: " << OUTPUT_DIR + filename << std::endl;
         return;
     }
 
-    // 写入表头
-    file << "序号,砖型,砖数,重量,,,,,,"; // 7个空列
+    // --- 写入表头 (包含周日) ---
+    file << "序号,砖型,总需求,单重(kg),优先级,,,,,,";
 
-    int month = 7;
-    int day_of_month = 8;
-    int days_in_month[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    int working_day_counter = 0;
+    std::tm start_tm = {};
+    start_tm.tm_year = 2024 - 1900;
+    start_tm.tm_mon = 7 - 1;
+    start_tm.tm_mday = 8;
+    start_tm.tm_isdst = -1;
+    std::time_t current_time_t = std::mktime(&start_tm);
 
-    int total_days_to_print = std::ceil(static_cast<double>(individual.actual_days) * 7.0 / 6.0);
-
-    for (int i = 0; i < total_days_to_print; ++i)
+    int work_days_covered = 0;
+    while (work_days_covered < best_solution.actual_days)
     {
-        file << month << "." << day_of_month << ",";
-        day_of_month++;
-        if (day_of_month > days_in_month[month])
+        std::tm *current_tm = std::localtime(&current_time_t);
+
+        char date_buffer[11];
+        std::strftime(date_buffer, sizeof(date_buffer), "%Y-%m-%d", current_tm);
+        file << date_buffer << ",";
+
+        // 如果不是周日 (tm_wday != 0), 则计为一个工作日
+        if (current_tm->tm_wday != 0)
         {
-            day_of_month = 1;
-            month++;
+            work_days_covered++;
         }
+
+        current_time_t += 86400; // 移动到日历上的下一天
     }
     file << "\n";
 
-    // 写入数据
-    for (const auto &b : bricks)
+    // --- 写入数据行 ---
+    for (size_t i = 0; i < bricks.size(); ++i)
     {
-        file << b.id << "," << b.type << "," << b.total_count << "," << b.weight << ",,,,,,,,"; // 7 empty columns
+        file << bricks[i].id << "," << bricks[i].type << "," << bricks[i].quantity << "," << bricks[i].weight << "," << bricks[i].priority << ",,,,,,,";
 
-        working_day_counter = 0;
-        day_of_month = 8;
-        month = 7;
+        // 重新初始化日期，与表头对齐
+        current_time_t = std::mktime(&start_tm);
+        work_days_covered = 0;
+        int current_work_day_idx = 0;
 
-        for (int i = 2; i < total_days_to_print; ++i)
+        while (work_days_covered < best_solution.actual_days)
         {
-            // 每工作6天休息一天 (i从0开始，所以i=6是第7天)
-            if (i % 7 == 0)
-            { // Rest day logic
-              // This corresponds to day 7, 14, 21...
-            }
-            else
-            {
-                if (working_day_counter < individual.schedule.size())
+            std::tm *current_tm = std::localtime(&current_time_t);
+
+            if (current_tm->tm_wday != 0)
+            { // 如果是工作日
+                if (current_work_day_idx < best_solution.actual_days)
                 {
-                    double amount = individual.schedule[working_day_counter][b.id - 1];
-                    if (amount > 0.001)
-                    { // Use a small epsilon for floating point comparison
-                        file << amount;
+                    int daily_total_quantity = 0;
+                    for (int pass = 0; pass < PASSES_PER_DAY; ++pass)
+                    {
+                        daily_total_quantity += best_solution.schedule[current_work_day_idx][pass][i];
+                    }
+                    if (daily_total_quantity > 0)
+                    {
+                        file << daily_total_quantity;
                     }
                 }
-                working_day_counter++;
+                current_work_day_idx++;
+                work_days_covered++;
             }
+            // 无论是工作日还是休息日，都要输出一个逗号来占位
             file << ",";
 
-            day_of_month++;
-            if (day_of_month > days_in_month[month])
-            {
-                day_of_month = 1;
-                month++;
-            }
+            current_time_t += 86400;
         }
         file << "\n";
     }
+
     file.close();
 }
+
+#endif // FILE_UTILS_H

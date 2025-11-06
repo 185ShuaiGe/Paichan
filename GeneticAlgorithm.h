@@ -1,279 +1,300 @@
-#pragma once
+#ifndef GENETIC_ALGORITHM_H
+#define GENETIC_ALGORITHM_H
 
-#include <iostream>
 #include <vector>
-#include <string>
-#include <algorithm>
 #include <random>
-#include <map>
-#include <cmath>
 #include <numeric>
-
-#include "Constants.h"
+#include <algorithm>
+#include <map>
+#include <set>
 #include "DataStructures.h"
+#include "Constants.h"
 
-// 声明一个外部的随机数生成器，它将在main.cpp中被定义
 extern std::mt19937 rng;
 
-// --- 遗传算法函数 ---
-
-void calculate_fitness(Individual &individual, const std::vector<Brick> &bricks)
+// ==============================================================================
+// 1. 第一阶段预处理函数 (加入道次数量检查)
+// ==============================================================================
+void pre_schedule_phase1(Individual &individual, const std::vector<Brick> &bricks, std::vector<int> &remaining_quantities)
 {
-    double penalty = 0.0;
-    std::vector<double> produced_count(bricks.size(), 0.0);
+    std::uniform_real_distribution<> prob_dist(0.0, 1.0);
 
-    int days = individual.schedule.size();
-    individual.actual_days = days; // 存储真实天数
-
-    std::vector<double> produced_before_today(bricks.size(), 0.0);
-
-    for (int d = 0; d < days; ++d)
+    for (int day = 0; day < PHASE1_DAYS; ++day)
     {
-        double daily_zd_count = 0;
-        int types_produced_today = 0;
-
-        double total_daily_weight = 0;
-        for (size_t i = 0; i < bricks.size(); ++i)
-        {
-            double amount = individual.schedule[d][i];
-            if (amount > 0)
-            {
-                total_daily_weight += amount * bricks[i].weight;
-                types_produced_today++;
-            }
-        }
-        int estimated_batches = std::ceil(total_daily_weight / ((MAX_WEIGHT_PER_BATCH + MIN_WEIGHT_PER_BATCH) / 2.0));
-        if (estimated_batches > MAX_BATCHES_PER_DAY)
-        {
-            penalty += PENALTY_WEIGHT_VIOLATION * (estimated_batches - MAX_BATCHES_PER_DAY);
-        }
-
-        int unfinished_types_before_today = 0;
-        for (size_t i = 0; i < bricks.size(); ++i)
-        {
-            if (produced_before_today[i] < bricks[i].total_count)
-            {
-                unfinished_types_before_today++;
-            }
-        }
+        // 记录每个道次的当前负载 (重量和数量)
+        std::vector<double> pass_weights(PASSES_PER_DAY, 0.0);
+        std::vector<int> pass_quantities(PASSES_PER_DAY, 0);
 
         for (size_t i = 0; i < bricks.size(); ++i)
         {
-            double amount = individual.schedule[d][i];
-            if (amount <= 0)
-                continue;
-
-            if (d < 5)
+            if (bricks[i].type.rfind("ZD", 0) == 0 && remaining_quantities[i] > 0)
             {
-                if (bricks[i].priority != 0)
-                    penalty += PENALTY_ZD_FIRST_5_DAYS;
-                daily_zd_count += amount;
+                if (prob_dist(rng) < 0.90)
+                {
+                    int quantity_to_produce = 2;
+                    if (remaining_quantities[i] >= quantity_to_produce)
+                    {
+                        double batch_weight = quantity_to_produce * bricks[i].weight;
+
+                        for (int pass = 0; pass < PASSES_PER_DAY; ++pass)
+                        {
+                            if (pass_weights[pass] + batch_weight <= MAX_PASS_WEIGHT &&
+                                pass_quantities[pass] + quantity_to_produce <= MAX_BRICKS_PER_PASS)
+                            {
+                                individual.schedule[day][pass][i] += quantity_to_produce;
+                                pass_weights[pass] += batch_weight;
+                                pass_quantities[pass] += quantity_to_produce;
+                                remaining_quantities[i] -= quantity_to_produce;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
-
-            if (d >= 5 && unfinished_types_before_today > 10 && types_produced_today < 10)
-            {
-                penalty += PENALTY_TYPE_DIVERSITY * (10 - types_produced_today);
-            }
-
-            double remaining_before = bricks[i].total_count - produced_before_today[i];
-            if (remaining_before > 1 && static_cast<int>(std::round(amount)) % 2 != 0 && amount > 0.1)
-            {
-                penalty += PENALTY_ODD_PRODUCTION;
-            }
-
-            produced_count[i] += amount;
-        }
-
-        if (d < 5 && daily_zd_count > MAX_ZD_BRICKS_FIRST_5_DAYS)
-        {
-            penalty += PENALTY_ZD_FIRST_5_DAYS * (daily_zd_count - MAX_ZD_BRICKS_FIRST_5_DAYS);
-        }
-
-        for (size_t i = 0; i < bricks.size(); ++i)
-        {
-            produced_before_today[i] += individual.schedule[d][i];
-        }
-    }
-
-    for (size_t i = 0; i < bricks.size(); ++i)
-    {
-        if (produced_count[i] < bricks[i].total_count)
-        {
-            penalty += PENALTY_UNFINISHED_PRODUCTION * (bricks[i].total_count - produced_count[i]);
-        }
-    }
-
-    individual.fitness = static_cast<double>(days) + penalty;
-}
-
-Individual generate_greedy_solution(const std::vector<Brick> &bricks, int max_days = 100)
-{
-    Individual individual;
-    std::vector<double> produced_count(bricks.size(), 0.0);
-    int day = 0;
-
-    std::vector<int> brick_indices(bricks.size());
-    std::iota(brick_indices.begin(), brick_indices.end(), 0);
-    std::sort(brick_indices.begin(), brick_indices.end(), [&](int a, int b)
-              { return bricks[a].priority < bricks[b].priority; });
-
-    while (day < max_days)
-    {
-        bool all_done = true;
-        for (size_t i = 0; i < bricks.size(); ++i)
-        {
-            if (produced_count[i] < bricks[i].total_count)
-            {
-                all_done = false;
-                break;
-            }
-        }
-        if (all_done)
-            break;
-
-        individual.schedule.emplace_back(std::vector<double>(bricks.size(), 0.0));
-        double daily_total_weight = 0;
-        int estimated_batches = 0;
-
-        if (day < 5)
-        {
-            double zd_produced_today = 0;
-            for (int idx : brick_indices)
-            {
-                if (bricks[idx].priority != 0 || produced_count[idx] >= bricks[idx].total_count)
-                    continue;
-                double remaining_to_produce = bricks[idx].total_count - produced_count[idx];
-                double can_produce = std::min(remaining_to_produce, static_cast<double>(MAX_ZD_BRICKS_FIRST_5_DAYS - zd_produced_today));
-                if (can_produce <= 0)
-                    continue;
-                if (remaining_to_produce > 1 && can_produce > 1)
-                    can_produce = std::floor(can_produce / 2.0) * 2.0;
-                if (can_produce <= 0)
-                    continue;
-                individual.schedule[day][idx] = can_produce;
-                produced_count[idx] += can_produce;
-                zd_produced_today += can_produce;
-            }
-        }
-        else
-        {
-            for (int idx : brick_indices)
-            {
-                if (produced_count[idx] >= bricks[idx].total_count || estimated_batches >= MAX_BATCHES_PER_DAY)
-                    continue;
-                double remaining_weight_capacity = MAX_BATCHES_PER_DAY * MAX_WEIGHT_PER_BATCH - daily_total_weight;
-                if (remaining_weight_capacity <= 0)
-                    break;
-                double remaining_to_produce = bricks[idx].total_count - produced_count[idx];
-                double can_produce_by_weight = remaining_weight_capacity / bricks[idx].weight;
-                double amount_to_produce = std::floor(std::min(remaining_to_produce, can_produce_by_weight));
-                if (amount_to_produce < 1.0)
-                    continue;
-                if (remaining_to_produce > 1 && amount_to_produce > 1)
-                    amount_to_produce = std::floor(amount_to_produce / 2.0) * 2.0;
-                if (amount_to_produce <= 0)
-                    continue;
-                individual.schedule[day][idx] = amount_to_produce;
-                produced_count[idx] += amount_to_produce;
-                daily_total_weight += amount_to_produce * bricks[idx].weight;
-                estimated_batches = std::ceil(daily_total_weight / ((MAX_WEIGHT_PER_BATCH + MIN_WEIGHT_PER_BATCH) / 2.0));
-            }
-        }
-        day++;
-    }
-    if (day >= max_days)
-        std::cout << "Warning: Greedy solution exceeds max days." << std::endl;
-    return individual;
-}
-
-void mutate(Individual &individual, const std::vector<Brick> &bricks)
-{
-    if (individual.schedule.empty())
-        return;
-    std::uniform_int_distribution<> day_dist(0, individual.schedule.size() - 1);
-    std::uniform_int_distribution<> brick_dist(0, bricks.size() - 1);
-    int day_idx = day_dist(rng);
-    int brick_idx = brick_dist(rng);
-    double produced_before_day = 0.0;
-    for (int d = 0; d < day_idx; ++d)
-        produced_before_day += individual.schedule[d][brick_idx];
-    double remaining_total = bricks[brick_idx].total_count - produced_before_day;
-    if (remaining_total <= 0)
-        return;
-    std::uniform_real_distribution<> amount_dist(0, remaining_total);
-    double new_amount = std::floor(amount_dist(rng));
-    if (remaining_total > 1 && new_amount > 1)
-        new_amount = std::floor(new_amount / 2.0) * 2.0;
-    individual.schedule[day_idx][brick_idx] = new_amount;
-
-    std::vector<double> total_produced(bricks.size(), 0.0);
-    for (auto &day_plan : individual.schedule)
-    {
-        for (size_t i = 0; i < bricks.size(); ++i)
-        {
-            double can_produce = bricks[i].total_count - total_produced[i];
-            day_plan[i] = std::max(0.0, std::min(day_plan[i], can_produce));
-            total_produced[i] += day_plan[i];
         }
     }
 }
 
-std::vector<Individual> initialize_population(const std::vector<Brick> &bricks)
+// ==============================================================================
+// 2. 第二阶段遗传算法函数 (全部加入道次数量检查)
+// ==============================================================================
+
+// --- 适应度函数 ---
+void calculate_fitness_phase2(Individual &individual, const std::vector<Brick> &bricks, const std::map<int, int> &phase2_demands)
+{
+    double total_penalty = 0;
+    individual.actual_days = PHASE1_DAYS;
+    std::map<int, int> total_produced_phase2;
+
+    int remaining_types_count = phase2_demands.size();
+    int min_diversity_target = std::min(PHASE2_MIN_DIVERSITY, remaining_types_count);
+
+    for (int day = PHASE1_DAYS; day < MAX_DAYS; ++day)
+    {
+        double daily_production_weight = 0;
+        std::set<int> types_produced_this_day;
+
+        for (int pass = 0; pass < PASSES_PER_DAY; ++pass)
+        {
+            double pass_weight = 0;
+            int pass_quantity = 0; // 新增：计算道次总数量
+            for (size_t i = 0; i < bricks.size(); ++i)
+            {
+                int quantity = individual.schedule[day][pass][i];
+                if (quantity > 0)
+                {
+                    pass_weight += quantity * bricks[i].weight;
+                    pass_quantity += quantity; // 累加数量
+                    types_produced_this_day.insert(i);
+                    total_produced_phase2[i] += quantity;
+                }
+            }
+            // 惩罚1: 道次约束 (重量 + 数量)
+            if (pass_weight > 0)
+            {
+                if (pass_weight > MAX_PASS_WEIGHT)
+                    total_penalty += (pass_weight - MAX_PASS_WEIGHT) * PASS_OVERWEIGHT_PENALTY_WEIGHT;
+                else if (pass_weight < MIN_PASS_WEIGHT)
+                    total_penalty += (MIN_PASS_WEIGHT - pass_weight) * PASS_UNDERWEIGHT_PENALTY_WEIGHT;
+            }
+            if (pass_quantity > MAX_BRICKS_PER_PASS)
+            {
+                total_penalty += (pass_quantity - MAX_BRICKS_PER_PASS) * PASS_QUANTITY_PENALTY_WEIGHT;
+            }
+            daily_production_weight += pass_weight;
+        }
+
+        if (daily_production_weight > 0)
+        {
+            individual.actual_days = day + 1;
+            if (types_produced_this_day.size() < min_diversity_target)
+            {
+                total_penalty += (min_diversity_target - types_produced_this_day.size()) * DIVERSITY_PENALTY_WEIGHT;
+            }
+        }
+    }
+
+    // ... (优先级和未满足需求惩罚逻辑不变) ...
+    int first_day_zb_zf = MAX_DAYS;
+    int last_day_zd = 0;
+    for (int day = PHASE1_DAYS; day < individual.actual_days; ++day)
+    {
+        for (size_t i = 0; i < bricks.size(); ++i)
+        {
+            bool produced_this_day = false;
+            for (int pass = 0; pass < PASSES_PER_DAY; ++pass)
+                if (individual.schedule[day][pass][i] > 0)
+                    produced_this_day = true;
+
+            if (produced_this_day)
+            {
+                if (bricks[i].type.rfind("ZD", 0) == 0 && phase2_demands.count(i))
+                    last_day_zd = std::max(last_day_zd, day);
+                if (bricks[i].type.rfind("ZB", 0) == 0 || bricks[i].type.rfind("ZF", 0) == 0)
+                    first_day_zb_zf = std::min(first_day_zb_zf, day);
+            }
+        }
+    }
+    if (first_day_zb_zf < last_day_zd)
+    {
+        total_penalty += (last_day_zd - first_day_zb_zf) * PRIORITY_PENALTY_WEIGHT;
+    }
+    for (const auto &pair : phase2_demands)
+    {
+        int brick_idx = pair.first;
+        int demand = pair.second;
+        total_penalty += std::abs(total_produced_phase2[brick_idx] - demand) * UNMET_DEMAND_PENALTY_WEIGHT;
+    }
+
+    individual.fitness = (individual.actual_days - PHASE1_DAYS) + total_penalty;
+}
+
+// --- 种群初始化 ---
+std::vector<Individual> initialize_population_phase2(const std::vector<Brick> &bricks, const std::map<int, int> &phase2_demands, const Individual &base_schedule)
 {
     std::vector<Individual> population;
-    std::cout << "Generating initial greedy solution..." << std::endl;
-    Individual greedy_sol = generate_greedy_solution(bricks);
-    population.push_back(greedy_sol);
-    std::cout << "Creating initial population from mutations..." << std::endl;
-    for (int i = 1; i < POPULATION_SIZE; ++i)
+    std::uniform_int_distribution<> batch_size_dist(1, 2); // 1->2件, 2->4件
+
+    for (int i = 0; i < POPULATION_SIZE; ++i)
     {
-        Individual new_ind = greedy_sol;
-        for (int j = 0; j < 10; ++j)
-            mutate(new_ind, bricks);
-        population.push_back(new_ind);
+        Individual ind = base_schedule;
+
+        std::vector<std::pair<int, int>> batches_to_schedule;
+        for (const auto &pair : phase2_demands)
+        {
+            int brick_idx = pair.first;
+            int remaining_qty = pair.second;
+            while (remaining_qty > 0)
+            {
+                int batch_size = batch_size_dist(rng) * 2;
+                batch_size = std::min(remaining_qty, batch_size);
+                batches_to_schedule.push_back({brick_idx, batch_size});
+                remaining_qty -= batch_size;
+            }
+        }
+        std::shuffle(batches_to_schedule.begin(), batches_to_schedule.end(), rng);
+
+        for (const auto &batch : batches_to_schedule)
+        {
+            int brick_idx = batch.first;
+            int qty = batch.second;
+            double batch_weight = qty * bricks[brick_idx].weight;
+
+            std::uniform_int_distribution<> day_dist(PHASE1_DAYS, MAX_DAYS - 1);
+            std::uniform_int_distribution<> pass_dist(0, PASSES_PER_DAY - 1);
+
+            for (int attempt = 0; attempt < 100; ++attempt)
+            {
+                int day = day_dist(rng);
+                int pass = pass_dist(rng);
+
+                double current_pass_weight = 0;
+                int current_pass_quantity = 0;
+                for (size_t j = 0; j < bricks.size(); ++j)
+                {
+                    current_pass_weight += ind.schedule[day][pass][j] * bricks[j].weight;
+                    current_pass_quantity += ind.schedule[day][pass][j];
+                }
+
+                if (current_pass_weight + batch_weight <= MAX_PASS_WEIGHT &&
+                    current_pass_quantity + qty <= MAX_BRICKS_PER_PASS)
+                {
+                    ind.schedule[day][pass][brick_idx] += qty;
+                    break;
+                }
+            }
+        }
+        population.push_back(ind);
     }
     return population;
 }
 
-Individual tournament_selection(const std::vector<Individual> &population)
+// --- 变异 ---
+void mutate_phase2(Individual &individual, const std::vector<Brick> &bricks, const std::map<int, int> &phase2_demands)
 {
-    Individual best;
-    std::uniform_int_distribution<> dist(0, population.size() - 1);
-    int best_idx = dist(rng);
-    best = population[best_idx];
-    for (int i = 1; i < TOURNAMENT_SIZE; ++i)
+    if (phase2_demands.empty())
+        return;
+
+    std::uniform_int_distribution<> day_dist(PHASE1_DAYS, MAX_DAYS - 1);
+    std::uniform_int_distribution<> pass_dist(0, PASSES_PER_DAY - 1);
+    std::vector<int> demand_indices;
+    for (const auto &pair : phase2_demands)
+        demand_indices.push_back(pair.first);
+    std::uniform_int_distribution<> brick_dist(0, demand_indices.size() - 1);
+
+    int from_day = day_dist(rng);
+    int from_pass = pass_dist(rng);
+    int brick_idx = demand_indices[brick_dist(rng)];
+
+    if (individual.schedule[from_day][from_pass][brick_idx] > 0)
     {
-        int idx = dist(rng);
-        if (population[idx].fitness < best.fitness)
-            best = population[idx];
-    }
-    return best;
-}
+        int amount_to_move = (std::uniform_int_distribution<>(1, 2)(rng)) * 2;
+        amount_to_move = std::min(individual.schedule[from_day][from_pass][brick_idx], amount_to_move);
 
-Individual crossover(const Individual &parent1, const Individual &parent2, const std::vector<Brick> &bricks)
-{
-    Individual offspring;
-    const auto &p1 = (parent1.schedule.size() < parent2.schedule.size()) ? parent1 : parent2;
-    const auto &p2 = (parent1.schedule.size() < parent2.schedule.size()) ? parent2 : parent1;
-    size_t p1_days = p1.schedule.size();
-    if (p1_days <= 1)
-        return p2;
+        int to_day = day_dist(rng);
+        int to_pass = pass_dist(rng);
 
-    std::uniform_int_distribution<> dist(0, p1_days - 1);
-    int crossover_point = dist(rng);
+        if (from_day == to_day && from_pass == to_pass)
+            return;
 
-    offspring.schedule.insert(offspring.schedule.end(), p1.schedule.begin(), p1.schedule.begin() + crossover_point);
-    offspring.schedule.insert(offspring.schedule.end(), p2.schedule.begin() + crossover_point, p2.schedule.end());
-
-    std::vector<double> total_produced(bricks.size(), 0.0);
-    for (auto &day_plan : offspring.schedule)
-    {
+        // 检查目标道次容量
+        double to_pass_weight = 0;
+        int to_pass_quantity = 0;
         for (size_t i = 0; i < bricks.size(); ++i)
         {
-            double can_produce = bricks[i].total_count - total_produced[i];
-            day_plan[i] = std::max(0.0, std::min(day_plan[i], can_produce));
-            total_produced[i] += day_plan[i];
+            to_pass_weight += individual.schedule[to_day][to_pass][i] * bricks[i].weight;
+            to_pass_quantity += individual.schedule[to_day][to_pass][i];
+        }
+
+        if (to_pass_weight + amount_to_move * bricks[brick_idx].weight <= MAX_PASS_WEIGHT &&
+            to_pass_quantity + amount_to_move <= MAX_BRICKS_PER_PASS)
+        {
+            individual.schedule[from_day][from_pass][brick_idx] -= amount_to_move;
+            individual.schedule[to_day][to_pass][brick_idx] += amount_to_move;
+        }
+    }
+}
+
+// Crossover 和 Tournament Selection 函数保持不变
+// ...
+
+Individual crossover_phase2(const Individual &parent1, const Individual &parent2, const std::vector<Brick> &bricks)
+{
+    Individual offspring(bricks.size());
+    offspring = parent1;
+
+    std::uniform_int_distribution<> dist(0, bricks.size() - 1);
+    int crossover_point = dist(rng);
+
+    for (size_t i = crossover_point; i < bricks.size(); ++i)
+    {
+        for (int day = PHASE1_DAYS; day < MAX_DAYS; ++day)
+        {
+            for (int pass = 0; pass < PASSES_PER_DAY; ++pass)
+            {
+                offspring.schedule[day][pass][i] = parent2.schedule[day][pass][i];
+            }
         }
     }
     return offspring;
 }
+
+Individual tournament_selection(const std::vector<Individual> &population)
+{
+    Individual best(population.empty() ? 0 : population[0].schedule[0][0].size());
+    bool first = true;
+    std::uniform_int_distribution<> dist(0, population.size() - 1);
+
+    for (int i = 0; i < TOURNAMENT_SIZE; ++i)
+    {
+        const Individual &contender = population[dist(rng)];
+        if (first || contender.fitness < best.fitness)
+        {
+            best = contender;
+            first = false;
+        }
+    }
+    return best;
+}
+
+#endif // GENETIC_ALGORITHM_H

@@ -1,23 +1,35 @@
-#pragma once
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
 
-// --- 常量定义 ---
+#include <string>
 
-// 遗传算法参数
-const int POPULATION_SIZE = 5;     // 种群大小
-const int MAX_GENERATIONS = 50;    // 最大迭代代数
-const double MUTATION_RATE = 0.1;  // 变异率
-const double CROSSOVER_RATE = 0.8; // 交叉率
-const int TOURNAMENT_SIZE = 2;     // 锦标赛选择大小
+// --- 文件路径 ---
+const std::string OUTPUT_DIR = "results/";
 
-// 生产约束
-const double MAX_WEIGHT_PER_BATCH = 2200.0; // 每道次最大总重
-const double MIN_WEIGHT_PER_BATCH = 1700.0; // 每道次最小总重
-const int MAX_BATCHES_PER_DAY = 15;         // 每日最大道次
-const int MAX_ZD_BRICKS_FIRST_5_DAYS = 20;  // 前五天ZD砖块每日最大生产数
+// --- 遗传算法参数 ---
+const int POPULATION_SIZE = 50;  // 增加种群大小以应对更严的约束
+const int MAX_GENERATIONS = 200; // 增加迭代次数
+const double MUTATION_RATE = 0.2;
+const double CROSSOVER_RATE = 0.8;
+const int TOURNAMENT_SIZE = 5;
 
-// 惩罚项权重
-const double PENALTY_WEIGHT_VIOLATION = 1.0;       // 重量约束违反惩罚
-const double PENALTY_UNFINISHED_PRODUCTION = 10.0; // 未完成生产的惩罚
-const double PENALTY_ZD_FIRST_5_DAYS = 2.0;        // 前五天ZD生产规则违反惩罚
-const double PENALTY_TYPE_DIVERSITY = 1.0;         // 砖型多样性惩罚
-const double PENALTY_ODD_PRODUCTION = 1.0;         // 奇数生产惩罚
+// --- 生产约束 ---
+const int MAX_DAYS = 50;
+const int PASSES_PER_DAY = 15;
+const double MIN_PASS_WEIGHT = 1700.0;
+const double MAX_PASS_WEIGHT = 2200.0;
+const int MAX_BRICKS_PER_PASS = 4; // 新增：每个道次最多生产的砖块总数
+
+// --- 分阶段生产参数 ---
+const int PHASE1_DAYS = 5;
+const int PHASE2_MIN_DIVERSITY = 10;
+
+// --- 适应度函数惩罚权重 ---
+const double PASS_OVERWEIGHT_PENALTY_WEIGHT = 20.0;
+const double PASS_UNDERWEIGHT_PENALTY_WEIGHT = 15.0;
+const double PASS_QUANTITY_PENALTY_WEIGHT = 50.0; // 新增：道次数量超限惩罚 (高权重)
+const double PRIORITY_PENALTY_WEIGHT = 30.0;
+const double DIVERSITY_PENALTY_WEIGHT = 5.0;
+const double UNMET_DEMAND_PENALTY_WEIGHT = 1000.0;
+
+#endif // CONSTANTS_H
